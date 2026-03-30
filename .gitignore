@@ -35,3 +35,7 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# Employee and team data — contains PII, never commit to version control
+data/employees.csv
+data/teams.csv
