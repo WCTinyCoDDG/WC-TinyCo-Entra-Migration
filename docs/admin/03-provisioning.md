@@ -12,16 +12,49 @@
 
 This document covers day-to-day administration of the TinyCo Entra ID 
 tenant — provisioning new users, deprovisioning departing employees, 
-changing team assignments, and adding new groups.
+changing team assignments, and adding new groups and applications.
 
-Two methods are available for each operation:
+### Source of Truth Philosophy
 
-- **Terraform method** — the preferred approach for bulk changes or 
-  when maintaining infrastructure as code discipline. All changes are 
-  version controlled and auditable in GitHub.
-- **Entra portal method** — suitable for urgent one-off changes where 
-  speed is prioritised over code discipline. Should be followed up with 
-  a Terraform code update to keep the codebase in sync.
+TinyCo's identity infrastructure is driven by two CSV files that act 
+as a stand-in for a production HR system:
+
+- **`data/employees.csv`** — the employee roster. Every account in 
+  Entra ID originates from a row in this file.
+- **`data/teams.csv`** — the team configuration. Group structure and 
+  application access is derived from this file.
+
+These files are stored locally and gitignored — they contain personal 
+information that must never be committed to version control.
+
+**The operational principle:**
+> Make the change in the CSV first. Then run `terraform apply`. 
+> Entra ID reflects the CSV — always.
+
+This mirrors how a production HRIS integration works. In a future 
+production environment, these CSV files would be replaced by a direct 
+SCIM feed from an HR system like ADP — the Terraform code itself would 
+require minimal modification to support that upgrade.
+
+### Two Methods Available
+
+For each operation, two methods are documented:
+
+- **Terraform method** — preferred for all changes. Changes are 
+  version controlled, auditable, and reproducible.
+- **Entra portal method** — for urgent situations where speed is 
+  required. Must be followed up with a CSV and Terraform update 
+  to keep the codebase in sync.
+
+---
+
+## Before Any Terraform Operation
+
+Always authenticate your Azure CLI session before running Terraform:
+```bash
+az login --tenant "42a9915e-aa4a-4426-9a86-a04a0dac6222" \
+  --scope "https://graph.microsoft.com/.default"
+```
 
 ---
 
@@ -29,63 +62,61 @@ Two methods are available for each operation:
 
 ### Method 1 — Terraform (Preferred)
 
-**Step 1 — Add the employee to `main.tf`**
+**Step 1 — Add the employee to `employees.csv`**
 
-Open `terraform/main.tf` in VS Code. Find the `locals` block containing 
-the employee list. Add the new employee following the existing format:
-```hcl
-"firstname.lastname" = { display_name = "First Last", team = "TeamName" }
+Open `data/employees.csv` and add a new row:
 ```
-
-Example — adding a new Backend engineer named Alex Smith:
-```hcl
-"alex.smith" = { display_name = "Alex Smith", team = "Backend" }
+first_name,last_name,team
+...existing rows...
+Alex,Smith,Backend
 ```
 
 Valid team names: `ITOps`, `SRE`, `Security`, `Backend`, `Frontend`, 
 `Design`, `Product`, `PeopleOps`, `Legal`
 
-**Step 2 — Apply the change**
+**Step 2 — Preview the change**
 ```bash
 cd ~/Desktop/WC-TinyCo-Entra-Migration/terraform
 terraform plan
+```
+
+Confirm the plan shows exactly 1 new user and 1 new group membership 
+being added. Review before proceeding.
+
+**Step 3 — Apply the change**
+```bash
 terraform apply
 ```
-
 Type `yes` when prompted.
 
-**Step 3 — Commit the change to GitHub**
-```bash
-cd ~/Desktop/WC-TinyCo-Entra-Migration
-git add .
-git commit -m "Add new user: Alex Smith (Backend)"
-git push
-```
+**Step 4 — Commit the updated CSV is NOT required**
 
-**Result:** The user account is created in Entra with the email 
-`alex.smith@TinyCoDDG.onmicrosoft.com`, added to the `TinyCo-Backend` 
-group, and automatically provisioned in all apps assigned to Backend 
-via SCIM within minutes.
+The CSV is gitignored by design — it never goes to GitHub. However, 
+ensure your local CSV is backed up securely as it is the source of 
+truth for your tenant.
+
+**Result:** The user account `alex.smith@TinyCoDDG.onmicrosoft.com` 
+is created in Entra, added to `TinyCo-Backend`, and automatically 
+provisioned in all Backend-assigned apps via SCIM within minutes.
 
 ---
 
-### Method 2 — Entra Portal (Quick)
+### Method 2 — Entra Portal (Urgent)
 
-1. Go to **Entra admin centre** → **Users** → **New user** → 
-   **Create new user**
+1. **Entra admin centre** → **Users** → **New user** → **Create new user**
 2. Fill in:
    - **User principal name:** `firstname.lastname@TinyCoDDG.onmicrosoft.com`
    - **Display name:** `First Last`
-   - **Password:** Use the standard TinyCo temporary password
+   - **Password:** Standard TinyCo temporary password
    - **Force password change:** Yes
 3. Click **Create**
-4. Go to **Groups** → find the correct `TinyCo-[Team]` group → 
-   **Members** → **Add members** → search and add the new user
+4. Go to **Groups** → find `TinyCo-[Team]` → **Members** → 
+   **Add members** → add the user
 
-> **Important:** After using the portal method, update `main.tf` to 
-> include the new user so the codebase stays in sync with reality. 
-> If Terraform is run again without the update, it will not recognise 
-> the manually created user.
+> **Important:** After using the portal method, add the user to 
+> `employees.csv` and run `terraform apply` to keep the codebase 
+> in sync. Failing to do this means the next `terraform apply` 
+> will not recognise the manually created user.
 
 ---
 
@@ -93,155 +124,110 @@ via SCIM within minutes.
 
 ### Method 1 — Terraform (Preferred)
 
-**Step 1 — Remove the employee from `main.tf`**
+**Step 1 — Remove the employee from `employees.csv`**
 
-Find and delete the employee's entry from the `locals` block in `main.tf`.
+Delete the employee's row from `data/employees.csv`.
 
-**Step 2 — Apply the change**
+**Step 2 — Preview the change**
 ```bash
 terraform plan
+```
+
+Carefully review — confirm only the intended user is being removed.
+
+**Step 3 — Apply**
+```bash
 terraform apply
 ```
 
-Review the plan carefully — confirm only the intended user is being 
-removed before typing `yes`.
-
-**Step 3 — Commit to GitHub**
-```bash
-git add .
-git commit -m "Deprovision user: Alex Smith (Backend) — offboarded"
-git push
-```
-
-**Result:** The user account is disabled in Entra and removed from 
-all groups. SCIM automatically deprovisions the user from all 
-connected apps within minutes.
+**Result:** The account is disabled in Entra, removed from all groups, 
+and deprovisioned from all SCIM-connected apps within minutes.
 
 ---
 
-### Method 2 — Entra Portal (Quick)
+### Method 2 — Entra Portal (Immediate Access Revocation)
 
-For immediate access revocation (e.g. urgent termination):
+For urgent terminations where immediate access cut-off is required:
 
-1. Go to **Entra admin centre** → **Users**
-2. Search for the user → click their name
-3. Click **Revoke sessions** — immediately invalidates all active sessions
-4. Click **Edit** → set **Account enabled** to **No** → **Save**
+1. **Entra admin centre** → **Users** → search for the user
+2. Click **Revoke sessions** — immediately invalidates all active sessions
+3. Click **Edit** → set **Account enabled** to **No** → **Save**
 
-> This is the fastest way to cut off access. Follow up with the 
-> Terraform method to formally remove the user from the codebase.
+> Follow up with the Terraform method to remove the user from 
+> `employees.csv` and keep the codebase in sync.
 
 ---
 
 ## How to Change a User's Team
 
-When an employee moves between teams, their group membership and 
-application access must be updated.
+When an employee moves between teams their group membership, RBAC 
+permissions, and application access all update automatically.
 
 ### Method 1 — Terraform (Preferred)
 
-**Step 1 — Update the team value in `main.tf`**
-
-Find the employee in the `locals` block and change their `team` value:
-```hcl
+**Step 1 — Update the team value in `employees.csv`**
+```
 # Before
-"alex.smith" = { display_name = "Alex Smith", team = "Backend" }
+Alex,Smith,Backend
 
-# After
-"alex.smith" = { display_name = "Alex Smith", team = "Frontend" }
+# After  
+Alex,Smith,Frontend
 ```
 
-**Step 2 — Apply the change**
+**Step 2 — Preview and apply**
 ```bash
 terraform plan
 terraform apply
 ```
 
-Terraform will remove the user from `TinyCo-Backend` and add them 
-to `TinyCo-Frontend` automatically.
-
-**Step 3 — Commit to GitHub**
-```bash
-git add .
-git commit -m "Team change: Alex Smith moved from Backend to Frontend"
-git push
-```
-
-**Result:** Group membership updates immediately. SCIM removes access 
-to Backend-only apps and grants access to Frontend apps automatically.
+Terraform removes the user from `TinyCo-Backend` and adds them to 
+`TinyCo-Frontend` automatically. SCIM removes Backend-only app access 
+and grants Frontend app access.
 
 ---
 
-### Method 2 — Entra Portal (Quick)
+### Method 2 — Entra Portal
 
-1. Go to **Entra admin centre** → **Groups**
-2. Find `TinyCo-[OldTeam]` → **Members** → remove the user
-3. Find `TinyCo-[NewTeam]` → **Members** → **Add members** → add the user
+1. **Groups** → `TinyCo-[OldTeam]` → **Members** → remove the user
+2. **Groups** → `TinyCo-[NewTeam]` → **Members** → **Add members** → add the user
 
 ---
 
 ## How to Add a New Group
 
-When TinyCo adds a new team or department, a new security group is needed.
+When TinyCo adds a new team, no Terraform code changes are required. 
+Simply add employees with the new team name to `employees.csv` — 
+Terraform derives all group names dynamically from the CSV.
 
-### Method 1 — Terraform (Preferred)
+**Example — adding a new "Finance" team:**
 
-**Step 1 — Add the team name to the groups list in `main.tf`**
-
-Find the `azuread_group` resource block and add the new team:
-```hcl
-resource "azuread_group" "teams" {
-  for_each = toset([
-    "ITOps",
-    "SRE",
-    "Security",
-    "Backend",
-    "Frontend",
-    "Design",
-    "Product",
-    "PeopleOps",
-    "Legal",
-    "NewTeamName"    # ← add here
-  ])
-
-  display_name       = "TinyCo-${each.key}"
-  security_enabled   = true
-  mail_enabled       = false
-  assignable_to_role = true
-  description        = "TinyCo ${each.key} team — access group for apps and RBAC"
-}
+Add Finance employees to `employees.csv`:
+```
+Sarah,Jones,Finance
+Michael,Brown,Finance
 ```
 
-> **Critical:** The `assignable_to_role = true` property must be 
-> included at creation time. This property cannot be added to an 
-> existing group — the group must be deleted and recreated.
-
-**Step 2 — Assign apps to the new group**
-
-Update the relevant `.tf` app files to include the new group where 
-appropriate. For example, if the new team needs Mattermost access, 
-add their team name to the `contains([...])` filter in `mattermost.tf`.
-
-**Step 3 — Apply and commit**
+Run:
 ```bash
 terraform plan
 terraform apply
-git add .
-git commit -m "Add new group: TinyCo-NewTeamName"
-git push
 ```
+
+Terraform automatically creates `TinyCo-Finance` and assigns all 
+Finance employees to it. No `.tf` file editing required.
+
+> **Critical:** Groups are created with `assignable_to_role = true` 
+> by default in this codebase. This property must be set at creation 
+> time — it cannot be added to an existing group. The group must be 
+> deleted and recreated if this property is missing.
 
 ---
 
 ## How to Add a New Application
 
-When TinyCo adopts a new SaaS application, it needs to be registered 
-in Entra for SSO and provisioning.
+**Step 1 — Create a new Terraform file**
 
-### Step 1 — Create a new Terraform file
-
-Create a new file in the `terraform/` folder named after the app, 
-e.g. `notion.tf`. Follow the pattern established by existing app files:
+Create `terraform/[appname].tf` following the existing pattern:
 ```hcl
 # notion.tf
 resource "azuread_application" "notion" {
@@ -278,7 +264,7 @@ resource "azuread_app_role_assignment" "notion_groups" {
 }
 ```
 
-### Step 2 — Apply and commit
+**Step 2 — Apply and commit**
 ```bash
 terraform plan
 terraform apply
@@ -287,48 +273,46 @@ git commit -m "Add new app: TinyCo-Notion"
 git push
 ```
 
-### Step 3 — Configure SSO in Entra portal
+**Step 3 — Configure SSO in Entra portal**
 
-After Terraform creates the app registration:
-
-1. Go to **Entra admin centre** → **Enterprise Applications** → 
-   find `TinyCo-Notion`
-2. Click **Single sign-on** → select **SAML**
-3. Fill in the SSO URLs from the app vendor's documentation
+1. **Entra admin centre** → **Enterprise Applications** → `TinyCo-Notion`
+2. **Single sign-on** → **SAML**
+3. Fill in SSO URLs from the app vendor's documentation
 4. Download the Entra SAML certificate
-5. Paste the certificate and Entra SSO URLs into the app's admin portal
+5. Paste certificate and Entra SSO URLs into the app's admin portal
 
-### Step 4 — Configure SCIM (if supported)
+**Step 4 — Configure SCIM (if supported)**
 
-1. In the Enterprise App → click **Provisioning**
-2. Set **Provisioning Mode** to **Automatic**
-3. Enter the SCIM endpoint URL and secret token from the app vendor
-4. Click **Test Connection** → **Save**
+1. Enterprise App → **Provisioning** → **Automatic**
+2. Enter SCIM endpoint URL and secret token from app vendor
+3. **Test Connection** → **Save**
 
 ---
 
 ## Production Recommendations
 
-The following improvements are recommended as TinyCo scales beyond 
-the current 89-user environment:
+**CSV-driven provisioning is the current approach** — suitable for 
+TinyCo's current scale of 89 users. As the organization grows, 
+the following upgrades are recommended:
 
-**CSV-driven user provisioning**
-Replace the hardcoded user list in `main.tf` with a CSV-driven 
-`for_each` loop. Adding a new employee becomes as simple as adding 
-a row to a CSV file — no Terraform code editing required.
+**HR System SCIM Integration**  
+Connect TinyCo's HR system (ADP is already registered as a stub app) 
+directly to Entra via SCIM. New hire data flows automatically from 
+HR into Entra — the `employees.csv` file becomes unnecessary. 
+The Terraform code structure supports this upgrade with minimal changes.
 
-**HR System SCIM Integration**
-Connect TinyCo's HR system (e.g. ADP, which is already registered 
-as a stub app) directly to Entra via SCIM. New hire data flows 
-automatically from HR into Entra — zero manual provisioning required.
+**Privileged Identity Management (PIM)**  
+Use Entra ID Governance PIM to require justification and time-bound 
+activation for Global Administrator access. ITOps members hold 
+eligible (not permanent) Global Admin — activating only when needed 
+with a logged reason.
 
-**Privileged Identity Management (PIM)**
-Use Entra ID Governance PIM to require justification and approval 
-for Global Administrator activation. ITOps members would hold 
-eligible (not permanent) Global Admin access, activating it 
-only when needed with a logged reason.
-
-**Automated Access Reviews**
+**Automated Access Reviews**  
 Schedule quarterly access reviews using Entra ID Governance. 
-Group owners are prompted to confirm each member still requires 
-access — reducing the risk of stale permissions accumulating over time.
+Group owners confirm each member still requires access — reducing 
+stale permissions over time.
+
+**Terraform Remote State**  
+Move `terraform.tfstate` to Azure Blob Storage with state locking. 
+This enables multiple administrators to run Terraform safely without 
+state file conflicts.
